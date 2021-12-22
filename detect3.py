@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # YOLOv5 🚀 by Ultralytics, GPL-3.0 license
 """
 Run inference on images, videos, directories, streams, etc.
@@ -34,6 +35,44 @@ from utils.general import (LOGGER, check_file, check_img_size, check_imshow, che
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, time_sync
 
+import rospy
+import std_msgs.msg
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+import time
+
+from mutagen.mp3 import MP3 as mp3
+import pygame
+import time
+
+test_sound = os.path.dirname(__file__)+'sound/test.mp3'
+can_sound = os.path.dirname(__file__)+'sound/can.mp3'
+pet_sound = os.path.dirname(__file__)+'sound/pet.mp3'
+obento_sound = os.path.dirname(__file__)+'sound/obento.mp3'
+
+def play_sound(filename):
+    pygame.mixer.init()
+    pygame.mixer.music.load(filename) #音源を読み込み
+    mp3_length = mp3(filename).info.length #音源の長さ取得
+    pygame.mixer.music.play(1) #再生開始。1の部分を変えるとn回再生(その場合は次の行の秒数も×nすること)
+    time.sleep(mp3_length + 0.25) #再生開始後、音源の長さだけ待つ(0.25待つのは誤差解消)
+    pygame.mixer.music.stop() #音源の長さ待ったら再生停止
+
+play_sound(test_sound)
+
+bridge = CvBridge()
+
+enable_yolo=False
+def callback(msg):
+    global enable_yolo
+    enable_yolo=msg.data
+
+
+rospy.init_node("talker")
+rospy.Subscriber("enable_yolo", std_msgs.msg.Bool, callback)
+pub = rospy.Publisher("yolo_image", Image, queue_size=1)
+rate = rospy.Rate(2)
+
 
 @torch.no_grad()
 def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
@@ -62,6 +101,9 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         ):
+    can_cou=0
+    pet_cou=0
+    obento_cou=0
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
     is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
@@ -72,7 +114,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
 
     # Directories
     save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-    (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+    #(save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
     # Load model
     device = select_device(device)
@@ -132,6 +174,8 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
             else:
                 p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
 
+            #im_raw=im0
+
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # im.jpg
             txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # im.txt
@@ -160,11 +204,32 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
                         c = int(cls)  # integer class
                         label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
                         annotator.box_label(xyxy, label, color=colors(c, True))
-                        if save_crop:
-                            save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+                        #if save_crop:
+                            #save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+
+                    # 結果を音声出力    
+                    if enable_yolo:
+                        prob=float(f'{conf:.2f}')
+                        print(label)
+                        if "BOTTLE"==names[int(c)] and prob > 0.0 :
+                            pet_cou+=1
+                            if pet_cou>5:
+                                play_sound(pet_sound)
+                                pet_cou=0
+                        if "CAN"==names[int(c)] and prob > 0.0:
+                            can_cou+=1
+                            if can_cou>5:
+                                play_sound(can_sound)
+                                can_cou=0
+                        if "LUNCH_BOX"==names[int(c)] :
+                            obento_cou+=1
+                            if obento_cou>5:
+                                play_sound(obento_sound)
+                                obento_cou=0
+
 
             # Print time (inference-only)
-            LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
+            #LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
 
             # Stream results
             im0 = annotator.result()
@@ -190,6 +255,17 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
                             save_path += '.mp4'
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
+        #ros
+        if rospy.is_shutdown():
+            sys.exit()
+
+        msg = bridge.cv2_to_imgmsg(im0, encoding="bgr8")
+        pub.publish(msg)
+        
+        if enable_yolo:
+            time.sleep(0.1)
+        else:
+            time.sleep(0.5)
 
     # Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
@@ -234,8 +310,10 @@ def parse_opt():
     return opt
 
 
+
 def main(opt):
     check_requirements(exclude=('tensorboard', 'thop'))
+    
     run(**vars(opt))
 
 
